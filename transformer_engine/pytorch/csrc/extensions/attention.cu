@@ -1529,6 +1529,141 @@ void fused_out_correction(at::Tensor out, const std::vector<at::Tensor> &out_per
   }
 }
 
+template <typename dtype, int only_second_half, int tile_size, bool lse_packed>
+__global__ void thd_out_correction_kernel(dtype *out, dtype *out_per_step, float *lse,
+                                          float *lse_per_step, int *cu_seqlens, int batch,
+                                          int num_heads, int dim_per_head, int lse_seqlen) {
+  extern __shared__ int cu_seqlens_s[];
+  for (int i = threadIdx.x; i <= batch; i += blockDim.x) {
+    cu_seqlens_s[i] = cu_seqlens[i] / (only_second_half + 1);
+  }
+  __syncthreads();
+  int tile_id = (blockIdx.x * blockDim.x + threadIdx.x) / tile_size;
+  int lane_id = threadIdx.x % tile_size;
+  int num_tiles = (blockDim.x * gridDim.x) / tile_size;
+  int num_total_tokens = cu_seqlens_s[batch];
+  int num_loops_per_head = dim_per_head * sizeof(dtype) / sizeof(float4);
+  for (int token_id = tile_id; token_id < num_total_tokens; token_id += num_tiles) {
+    int seq_id = binary_search(token_id, cu_seqlens_s, batch + 1);
+    for (int head_id = blockIdx.y; head_id < num_heads; head_id += gridDim.y) {
+      size_t idx, idx_per_step;
+      if constexpr (lse_packed) {
+        idx = head_id * lse_seqlen + token_id + cu_seqlens_s[seq_id + 1] * only_second_half;
+        idx_per_step = head_id * lse_seqlen / (only_second_half + 1) + token_id;
+      } else {
+        size_t row = static_cast<size_t>(seq_id) * num_heads + head_id;
+        int col = token_id - cu_seqlens_s[seq_id];
+        int seq_len = cu_seqlens_s[seq_id + 1] - cu_seqlens_s[seq_id];
+        idx = row * lse_seqlen + col + seq_len * only_second_half;
+        idx_per_step = row * lse_seqlen / (only_second_half + 1) + col;
+      }
+      float lse_corrected_exp = exp(lse_per_step[idx_per_step] - lse[idx]);
+      idx = token_id + cu_seqlens_s[seq_id + 1] * only_second_half;
+      idx = (idx * num_heads + head_id) * dim_per_head;
+      idx_per_step = (static_cast<size_t>(token_id) * num_heads + head_id) * dim_per_head;
+      dtype *cur_out = out + idx;
+      dtype *cur_out_per_step = out_per_step + idx_per_step;
+      for (int j = lane_id; j < num_loops_per_head; j += tile_size) {
+        float4 data_per_step = reinterpret_cast<float4 *>(cur_out_per_step)[j];
+        float4 data = reinterpret_cast<float4 *>(cur_out)[j];
+        dtype *p_per_step = reinterpret_cast<dtype *>(&data_per_step);
+        dtype *p = reinterpret_cast<dtype *>(&data);
+        for (int k = 0; k < sizeof(float4) / sizeof(dtype); k++) {
+          p[k] += (p_per_step[k] == 0 ? 0 : p_per_step[k] * lse_corrected_exp);
+        }
+        reinterpret_cast<float4 *>(cur_out)[j] = data;
+      }
+    }
+  }
+}
+template <typename dtype, int only_second_half>
+static void thd_out_correction_helper(at::Tensor out, const at::Tensor &out_per_step,
+                                      const at::Tensor &lse, const at::Tensor &lse_per_step,
+                                      const at::Tensor &cu_seqlens, bool lse_packed) {
+  NVTE_CHECK(out.scalar_type() == out_per_step.scalar_type());
+  NVTE_CHECK(lse.scalar_type() == at::ScalarType::Float);
+  NVTE_CHECK(lse_per_step.scalar_type() == at::ScalarType::Float);
+  NVTE_CHECK(cu_seqlens.scalar_type() == at::ScalarType::Int);
+  int total_tokens = out.size(0);
+  int num_heads = out.size(1);
+  int dim_per_head = out.size(2);
+  NVTE_CHECK(out_per_step.size(0) == total_tokens / (only_second_half + 1));
+  NVTE_CHECK(out_per_step.size(1) == num_heads);
+  NVTE_CHECK(out_per_step.size(2) == dim_per_head);
+  int batch, lse_seqlen;
+  if (lse_packed) {
+    batch = cu_seqlens.size(0) - 1;
+    lse_seqlen = total_tokens;
+    NVTE_CHECK(lse.size(0) == num_heads);
+    NVTE_CHECK(lse.size(1) == lse_seqlen);
+    NVTE_CHECK(lse_per_step.size(0) == num_heads);
+    NVTE_CHECK(lse_per_step.size(1) == lse_seqlen / (only_second_half + 1));
+  } else {
+    batch = lse.size(0);
+    lse_seqlen = lse.size(2);
+    NVTE_CHECK(lse.size(1) == num_heads);
+    NVTE_CHECK(lse_per_step.size(0) == batch);
+    NVTE_CHECK(lse_per_step.size(1) == num_heads);
+    NVTE_CHECK(lse_per_step.size(2) == lse_seqlen / (only_second_half + 1));
+    NVTE_CHECK(cu_seqlens.size(0) == batch + 1);
+  }
+  constexpr int tile = 16;
+  constexpr int block = 512;
+  unsigned int grid_x =
+      (static_cast<size_t>(total_tokens) / (only_second_half + 1) * tile + block - 1) / block;
+  dim3 grid = {grid_x, (unsigned int)num_heads};
+  if (lse_packed) {
+    thd_out_correction_kernel<dtype, only_second_half, tile, true>
+        <<<grid, block, sizeof(int) * (batch + 1), at::cuda::getCurrentCUDAStream()>>>(
+            out.data_ptr<dtype>(), out_per_step.data_ptr<dtype>(), lse.data_ptr<float>(),
+            lse_per_step.data_ptr<float>(), cu_seqlens.data_ptr<int>(), batch, num_heads,
+            dim_per_head, lse_seqlen);
+  } else {
+    thd_out_correction_kernel<dtype, only_second_half, tile, false>
+        <<<grid, block, sizeof(int) * (batch + 1), at::cuda::getCurrentCUDAStream()>>>(
+            out.data_ptr<dtype>(), out_per_step.data_ptr<dtype>(), lse.data_ptr<float>(),
+            lse_per_step.data_ptr<float>(), cu_seqlens.data_ptr<int>(), batch, num_heads,
+            dim_per_head, lse_seqlen);
+  }
+}
+void thd_out_correction(at::Tensor out, const at::Tensor &out_per_step, const at::Tensor &lse,
+                        const at::Tensor &lse_per_step, const at::Tensor &cu_seqlens,
+                        bool only_second_half, bool lse_packed) {
+  if (only_second_half) {
+    if (out.scalar_type() == at::ScalarType::Half) {
+      using dtype = at::Half;
+      thd_out_correction_helper<dtype, 1>(out, out_per_step, lse, lse_per_step, cu_seqlens,
+                                          lse_packed);
+    } else if (out.scalar_type() == at::ScalarType::BFloat16) {
+      using dtype = at::BFloat16;
+      thd_out_correction_helper<dtype, 1>(out, out_per_step, lse, lse_per_step, cu_seqlens,
+                                          lse_packed);
+    } else if (out.scalar_type() == at::ScalarType::Float) {
+      using dtype = float;
+      thd_out_correction_helper<dtype, 1>(out, out_per_step, lse, lse_per_step, cu_seqlens,
+                                          lse_packed);
+    } else {
+      NVTE_ERROR("Unsupported dtype of out\n");
+    }
+  } else {
+    if (out.scalar_type() == at::ScalarType::Half) {
+      using dtype = at::Half;
+      thd_out_correction_helper<dtype, 0>(out, out_per_step, lse, lse_per_step, cu_seqlens,
+                                          lse_packed);
+    } else if (out.scalar_type() == at::ScalarType::BFloat16) {
+      using dtype = at::BFloat16;
+      thd_out_correction_helper<dtype, 0>(out, out_per_step, lse, lse_per_step, cu_seqlens,
+                                          lse_packed);
+    } else if (out.scalar_type() == at::ScalarType::Float) {
+      using dtype = float;
+      thd_out_correction_helper<dtype, 0>(out, out_per_step, lse, lse_per_step, cu_seqlens,
+                                          lse_packed);
+    } else {
+      NVTE_ERROR("Unsupported dtype of out\n");
+    }
+  }
+}
+
 namespace flash_attention {
 
 constexpr int warp_size = 32;

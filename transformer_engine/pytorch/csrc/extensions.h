@@ -450,6 +450,10 @@ void thd_grad_correction(at::Tensor grad, const at::Tensor &grad_per_step,
 at::Tensor thd_get_partitioned_indices(const at::Tensor &cu_seqlens, int total_tokens,
                                        int world_size, int rank);
 
+void thd_out_correction(at::Tensor out, const at::Tensor &out_per_step, const at::Tensor &lse,
+                        const at::Tensor &lse_per_step, const at::Tensor &cu_seqlens,
+                        bool only_second_half, bool lse_packed);
+
 __forceinline__ __device__ int binary_search(int target, int *array, int len);
 
 /***************************************************************************************************

@@ -190,6 +190,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("thd_get_partitioned_indices", &thd_get_partitioned_indices,
         "Generate partitioned indices for inputs in THD format",
         py::call_guard<py::gil_scoped_release>());
+  m.def("thd_out_correction", &thd_out_correction,
+        "Correct the THD format output of context parallelism in forward pass",
+        py::call_guard<py::gil_scoped_release>());
 
   // multi-tensor functions
   m.def("multi_tensor_scale", &multi_tensor_scale_cuda,
