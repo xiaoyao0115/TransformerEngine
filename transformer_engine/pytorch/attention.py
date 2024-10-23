@@ -2459,7 +2459,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                         )
         end.record()
         torch.cuda.synchronize()
-        print(qkv_format,"original kernel execution time:",start.elapsed_time(end)/exe_num, "ms")
+        print(qkv_format,out.dtype,"original kernel execution time:",start.elapsed_time(end)/exe_num, "ms")
 
         out_ori=out.clone()
         for i in range(warm_num):
@@ -2546,11 +2546,11 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                 )
         end.record()
         torch.cuda.synchronize()
-        print(qkv_format,"fused kernel execution time:",start.elapsed_time(end)/exe_num, "ms")
+        print(qkv_format,out.dtype,"fused kernel execution time:",start.elapsed_time(end)/exe_num, "ms")
 
         if qkv_format == "sbhd":
             tex.fused_out_correction(
-                out_ori.view(-1, *out.shape[-3:]),
+                out.view(-1, *out.shape[-3:]),
                 out_per_step,
                 softmax_lse,
                 softmax_lse_per_step,
@@ -2563,7 +2563,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
             )
         elif qkv_format == "bshd":
             tex.fused_out_correction(
-                out_ori.view(out.shape[-4], -1, *out.shape[-2:]),
+                out.view(out.shape[-4], -1, *out.shape[-2:]),
                 out_per_step,
                 softmax_lse,
                 softmax_lse_per_step,
@@ -2576,7 +2576,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
             )
         else:
             tex.fused_out_correction(
-                out_ori,
+                out,
                 out_per_step,
                 softmax_lse,
                 softmax_lse_per_step,
