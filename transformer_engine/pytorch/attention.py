@@ -2548,6 +2548,8 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
         torch.cuda.synchronize()
         print(qkv_format,out.dtype,"fused kernel execution time:",start.elapsed_time(end)/exe_num, "ms")
 
+        print("rank:",rank,"  lse:",softmax_lse.shape,"  out:",out.shape,
+              "  out_per_step:",out_per_step[rank].shape,"  lse_per_step:",softmax_lse_per_step[rank].shape)
         if qkv_format == "sbhd":
             tex.fused_out_correction(
                 out.view(-1, *out.shape[-3:]),
