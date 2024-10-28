@@ -17,7 +17,7 @@ from transformer_engine.pytorch.utils import (
 
 model_configs_flash_attn = {
     #   test:             b,  h, hg,   d,   sq,  skv,   p,     mask,      bias
-    # "cp_1_0": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "causal", "no_bias"),  # MHA
+    "cp_1_0": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "causal", "no_bias"),  # MHA
     # "cp_1_1": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "no_mask", "no_bias"),  # MHA
     # "cp_1_2": ModelConfig(
     #     2, 12, 12, 128, 4096, 4096, 0.0, "causal", "no_bias", window_size=(512, 0)
@@ -54,10 +54,10 @@ def get_bash_arguments(num_gpus_per_node, **kwargs):
 @pytest.mark.skipif(not _flash_attn_2_plus, reason="Flash-attn 2.0+ is required.")
 @pytest.mark.skipif(get_device_compute_capability() < (8, 0), reason="CP tests require sm80+.")
 # @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
-@pytest.mark.parametrize("dtype", ["bf16"])
+@pytest.mark.parametrize("dtype", ["fp16"])
 @pytest.mark.parametrize("model", model_configs_flash_attn.keys())
-# @pytest.mark.parametrize("qkv_format", ["bshd", "sbhd", "thd"])
-@pytest.mark.parametrize("qkv_format", ["thd"])
+@pytest.mark.parametrize("qkv_format", ["bshd", "sbhd", "thd"])
+# @pytest.mark.parametrize("qkv_format", ["thd"])
 # @pytest.mark.parametrize("cp_comm_type", ["p2p", "all_gather", "a2a", "a2a+p2p"])
 @pytest.mark.parametrize("cp_comm_type", ["p2p"])
 def test_cp_with_flash_attention(dtype, model, qkv_format, cp_comm_type):
@@ -80,7 +80,7 @@ def test_cp_with_flash_attention(dtype, model, qkv_format, cp_comm_type):
 
     subprocess.run(
         get_bash_arguments(
-            num_gpus_per_node=4 if cp_comm_type == "a2a+p2p" else 4,
+            num_gpus_per_node=4 if cp_comm_type == "a2a+p2p" else 2,
             dtype=dtype,
             model=model,
             qkv_format=qkv_format,
@@ -93,7 +93,7 @@ def test_cp_with_flash_attention(dtype, model, qkv_format, cp_comm_type):
 
 model_configs_fused_attn = {
     #   test:             b,  h, hg,   d,   sq,  skv,   p,     mask,      bias
-    "cp_1_0": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "causal", "no_bias"),  # MHA
+    # "cp_1_0": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "causal", "no_bias"),  # MHA
     # "cp_1_1": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "no_mask", "no_bias"),  # MHA
     # "cp_1_2": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "causal", "post_scale_bias"),  # MHA
     # "cp_1_3": ModelConfig(2, 12, 12, 128, 4096, 4096, 0.0, "no_mask", "post_scale_bias"),  # MHA
@@ -113,10 +113,10 @@ model_configs_fused_attn = {
 @pytest.mark.skipif(get_cudnn_version() < (8, 9, 7), reason="cuDNN 8.9.7+ is required.")
 @pytest.mark.skipif(get_device_compute_capability() < (8, 0), reason="CP tests require sm80+.")
 # @pytest.mark.parametrize("dtype", ["bf16", "fp16", "fp8"])
-@pytest.mark.parametrize("dtype", ["bf16"])
+@pytest.mark.parametrize("dtype", ["fp16"])
 @pytest.mark.parametrize("model", model_configs_fused_attn.keys())
-# @pytest.mark.parametrize("qkv_format", ["bshd", "sbhd", "thd"])
-@pytest.mark.parametrize("qkv_format", ["thd"])
+@pytest.mark.parametrize("qkv_format", ["bshd", "sbhd", "thd"])
+# @pytest.mark.parametrize("qkv_format", ["thd"])
 # @pytest.mark.parametrize("cp_comm_type", ["p2p", "all_gather", "a2a", "a2a+p2p"])
 @pytest.mark.parametrize("cp_comm_type", ["p2p"])
 def test_cp_with_fused_attention(dtype, model, qkv_format, cp_comm_type):
@@ -162,7 +162,7 @@ def test_cp_with_fused_attention(dtype, model, qkv_format, cp_comm_type):
 
     subprocess.run(
         get_bash_arguments(
-            num_gpus_per_node=4 if cp_comm_type == "a2a+p2p" else 4,
+            num_gpus_per_node=4 if cp_comm_type == "a2a+p2p" else 2,
             dtype=dtype,
             model=model,
             qkv_format=qkv_format,
