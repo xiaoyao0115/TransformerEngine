@@ -2440,6 +2440,10 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                         )
                 else:
                     if qkv_format in ["bshd", "sbhd"]:
+                            # # [b, np, sq] -> [b, np, 2, sq//2] lse not in packed format
+                            # # [np, b, sq] -> [np, b, 2, sq//2] lse in packed format
+                            # softmax_lse_ = softmax_lse.view(
+                            #     *softmax_lse.shape[:-1], 2, softmax_lse.shape[-1] // 2
                         flash_attn_fwd_out_correction(
                             out_,
                             out_per_step[i],
@@ -2601,7 +2605,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
         print("rank:{} ".format(rank),qkv_format,out.dtype,"original time:{}ms,fused time:{}ms,speedup:{}".format(ori_time,fused_time,ori_time/fused_time))
         
         
-        if rank==4:
+        if rank==0:
             print(out.shape,out.dtype)
             print(softmax_lse.shape,softmax_lse.dtype)
             print(cu_seqlens_q_padded)
