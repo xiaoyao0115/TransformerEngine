@@ -1638,6 +1638,19 @@ def flash_attn_a2a_communicate(
     torch.cuda.current_stream().wait_stream(cp_stream)
     return a2a_outputs[0] if len(a2a_inputs) == 1 else a2a_outputs
 
+def assert_close_with_diff(a, b, rtol=1e-5, atol=1e-8):
+    # 使用 torch.isclose 检查每个元素是否在容差内
+    close_mask = torch.isclose(a, b, rtol=rtol, atol=atol)
+    if close_mask.all():
+        print("All elements are within tolerance.")
+    else:
+        # 找到不匹配的索引
+        mismatched_indices = torch.nonzero(~close_mask, as_tuple=True)
+        print("Mismatched elements found:")
+        for i in range(len(mismatched_indices[0])):
+            idx = tuple(m[i].item() for m in mismatched_indices)
+            print(f"Index {idx}: {a[idx]} vs {b[idx]}")
+    
 
 class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
     """
@@ -2355,8 +2368,8 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
         end = torch.cuda.Event(enable_timing=True)
         
         out_ori=out.clone()
-        warm_num=100
-        exe_num=100
+        warm_num=0
+        exe_num=0
         # warm up
         for i in range(warm_num):
             for i in range(cp_size):
@@ -2464,21 +2477,23 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                         )
         end.record()
         torch.cuda.synchronize()
-        ori_time=start.elapsed_time(end)/exe_num
+        if exe_num!=0:
+            ori_time=start.elapsed_time(end)/exe_num
         
+        out_right=out.clone()
         with nvtx.annotate("Original out correction", color="blue"):
             for i in range(cp_size):
                 if qkv_format == "bshd":
                     out_per_step[i] = out_per_step[i].view(out.shape[0], -1, *out.shape[-2:])
-                    out_ = out_ori[:, 1, ...]
+                    out_ = out_right[:, 1, ...]
                 elif qkv_format == "sbhd":
                     out_per_step[i] = out_per_step[i].view(-1, *out.shape[-3:])
-                    out_ = out_ori[1]
+                    out_ = out_right[1]
 
                 if i <= rank or not causal:
                     if qkv_format in ["bshd", "sbhd"]:
                         flash_attn_fwd_out_correction(
-                            out_ori.view(*out_per_step[i].shape),
+                            out_right.view(*out_per_step[i].shape),
                             out_per_step[i],
                             softmax_lse,
                             softmax_lse_per_step[i],
@@ -2487,7 +2502,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                         )
                     elif qkv_format == "thd":
                         tex.thd_out_correction(
-                            out_ori,
+                            out_right,
                             out_per_step[i],
                             softmax_lse,
                             softmax_lse_per_step[i],
@@ -2507,7 +2522,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                         )
                     elif qkv_format == "thd":
                         tex.thd_out_correction(
-                            out_ori,
+                            out_right,
                             out_per_step[i],
                             softmax_lse,
                             softmax_lse_per_step[i],
@@ -2601,55 +2616,65 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                 )
         end.record()
         torch.cuda.synchronize()
-        fused_time=start.elapsed_time(end)/exe_num
-        print("rank:{} ".format(rank),qkv_format,out.dtype,"original time:{}ms,fused time:{}ms,speedup:{}".format(ori_time,fused_time,ori_time/fused_time))
+        if exe_num!=0:
+            fused_time=start.elapsed_time(end)/exe_num
+            print("rank:{} ".format(rank),qkv_format,out.dtype,"original time:{}ms,fused time:{}ms,speedup:{}".format(ori_time,fused_time,ori_time/fused_time))
         
         
-        if rank==0:
-            print(out.shape,out.dtype)
-            print(softmax_lse.shape,softmax_lse.dtype)
-            print(cu_seqlens_q_padded)
-            print("lse step",softmax_lse_per_step[0].dtype)
-            for i in range(cp_size):
-                print(softmax_lse_per_step[i].shape)
-            print("out step",out_per_step[0].dtype)
-            for i in range(cp_size):
-                print(out_per_step[i].shape)
+        # if rank==0:
+        #     print(out.view(-1, *out.shape[-3:]).shape,out.dtype)
+        #     print(softmax_lse.shape,softmax_lse.dtype)
+        #     print(cu_seqlens_q_padded)
+        #     print("lse step",softmax_lse_per_step[0].dtype)
+        #     for i in range(cp_size):
+        #         print(softmax_lse_per_step[i].shape)
+        #     print("out step",out_per_step[0].dtype)
+        #     for i in range(cp_size):
+        #         print(out_per_step[i].shape)
+        
                 
-                
         
+        # if rank==1:
+        #     print("out:",out[0,0,1,14]) #bshd
+        #     print("out_step-0:",out_per_step[0][0,0,1,14])
+        #     print("out_step-1:",out_per_step[1][0,0,1,14])
+        #     print("lse:",softmax_lse[0,1,0])
+        #     print("lse_step-0:",softmax_lse_per_step[0][0,1,0])
+        #     print("lse_step-1:",softmax_lse_per_step[1][0,1,0])
+            
         
         # print("rank:",rank,"  lse:",softmax_lse.shape,"  out:",out.shape,
         #       "  out_per_step:",out_per_step[rank].shape,"  lse_per_step:",softmax_lse_per_step[rank].shape)
         with nvtx.annotate("Fused out correction", color="red"):
-            if qkv_format == "sbhd":
-                tex.fused_out_correction(
-                    out.view(-1, *out.shape[-3:]),
-                    out_per_step,
-                    softmax_lse,
-                    softmax_lse_per_step,
-                    cu_seqlens_q_padded,
-                    qkv_format,
-                    cp_size,
-                    rank,
-                    causal,
-                    softmax_lse_in_packed_format,
-                )
-            elif qkv_format == "bshd":
-                tex.fused_out_correction(
-                    out.view(out.shape[-4], -1, *out.shape[-2:]),
-                    out_per_step,
-                    softmax_lse,
-                    softmax_lse_per_step,
-                    cu_seqlens_q_padded,
-                    qkv_format,
-                    cp_size,
-                    rank,
-                    causal,
-                    softmax_lse_in_packed_format,
-                )
-            else:
-                tex.fused_out_correction(
+            # if rank==1:
+                if qkv_format == "sbhd":
+                    tex.fused_out_correction(
+                        out.view(-1, *out.shape[-3:]),
+                        out_per_step,
+                        softmax_lse,
+                        softmax_lse_per_step,
+                        cu_seqlens_q_padded,
+                        qkv_format,
+                        cp_size,
+                        rank,
+                        causal,
+                        softmax_lse_in_packed_format,
+                    )
+                elif qkv_format == "bshd":
+                    tex.fused_out_correction(
+                        out.view(out.shape[-4], -1, *out.shape[-2:]),
+                        out_per_step,
+                        softmax_lse,
+                        softmax_lse_per_step,
+                        cu_seqlens_q_padded,
+                        qkv_format,
+                        cp_size,
+                        rank,
+                        causal,
+                        softmax_lse_in_packed_format,
+                    )
+                else:
+                    tex.fused_out_correction(
                     out,
                     out_per_step,
                     softmax_lse,
@@ -2661,6 +2686,13 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
                     causal,
                     softmax_lse_in_packed_format,
                 )
+
+        tols = dict(atol=5e-3, rtol=5e-3)
+        # if rank==1:
+        torch.testing.assert_close(out, out_right, **tols)
+
+        # if rank==1:
+        #     assert_close_with_diff(out, out_right,atol=5e-3, rtol=5e-3)
 
 
         if qkv_format != "thd" and softmax_lse_in_packed_format:
