@@ -1400,12 +1400,6 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
     // }
 
     ///if(head_id==1 && token_id==0 && lane_id==0)
-    if(blockIdx.y ==1 && (blockIdx.x * blockDim.x + threadIdx.x) / tile_size==0 && threadIdx.x % tile_size==0)
-    {
-      printf("format:%d\n",int(idx_lse_full));
-      //printf("size:%d,%d,%d,%d",out_full.size[0],out_full.size[1],out_full.size[2],out_full.size[3]);
-      //printf("format:%d,%d,%d,%d\n",int(out_full.store_format[0]),int(out_full.store_format[1]),int(out_full.store_format[2]),int(out_full.store_format[3]));
-    }
     
     dtype *cur_out = out + idx_out_full*dim_per_head;
     float lse_temp = lse[idx_lse_full];
@@ -1434,19 +1428,16 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
 
       for (int i = start; i < end; i++) {
 
-        // if (id[1]>=0 && start + tensors.start_tensor_this_launch > full_num && i>rank)
-        // {
-        //   idx_out=idx_out_half;
-        //   idx_lse=idx_lse_half;
-        // }
-        // else
-        // {
-        //   idx_out=idx_out_full;
-        //   idx_lse=idx_lse_full;
-        // }
-
-        idx_out=idx_out_full;
-        idx_lse=idx_lse_full;
+        if (id[1]>=0 && start + tensors.start_tensor_this_launch > full_num && i>rank)
+        {
+          idx_out=idx_out_half;
+          idx_lse=idx_lse_half;
+        }
+        else
+        {
+          idx_out=idx_out_full;
+          idx_lse=idx_lse_full;
+        }
 
         dtype *cur_out_per_step =
             reinterpret_cast<dtype *>(tensors.addresses_out[i]) + idx_out*dim_per_head;
