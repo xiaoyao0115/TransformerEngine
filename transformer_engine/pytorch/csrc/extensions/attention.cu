@@ -1263,6 +1263,7 @@ struct TensorFormat
       store_format[0]=2;
       store_format[1]=3;
       store_format[3]=1;
+      size[3]=size[1];
     }
     else if constexpr(format==QKVFormat::SBH)
     {
@@ -1362,12 +1363,14 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
   int num_tiles = (blockDim.x * gridDim.x) / tile_size;
   int num_loops_per_head = dim_per_head * sizeof(dtype) / sizeof(float4);
 
+
   size_t idx_out_full, idx_lse_full, idx_out_half, idx_lse_half;
 
   for (int token_id = tile_id; token_id < num_total_tokens; token_id += num_tiles) {
 
     int head_id = blockIdx.y;
     int id[4];
+
     if constexpr (out_format == QKVFormat::TH) {
       id[0]=binary_search(token_id, cu_seqlens_s, batch + 1);
       id[1]=token_id - cu_seqlens_s[id[0]];
@@ -1383,8 +1386,26 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
     id[2]=head_id;
     id[3]=token_id;
 
+    // if(blockIdx.y ==1 && (blockIdx.x * blockDim.x + threadIdx.x) / tile_size==0 && threadIdx.x % tile_size==0)
+    // {
+    //   printf("format:%d,%d,%d,%d\n",int(out_full.store_format[0]),int(out_full.store_format[1]),int(out_full.store_format[2]),int(out_full.store_format[3]));
+    // }
+
     idx_out_full=out_full.compute_address(id);
     idx_lse_full=lse_full.compute_address(id);
+
+    // if(blockIdx.y ==1 && (blockIdx.x * blockDim.x + threadIdx.x) / tile_size==0 && threadIdx.x % tile_size==0)
+    // {
+    //   printf("format:%d,%d,%d,%d\n",int(out_full.store_format[0]),int(out_full.store_format[1]),int(out_full.store_format[2]),int(out_full.store_format[3]));
+    // }
+
+    ///if(head_id==1 && token_id==0 && lane_id==0)
+    if(blockIdx.y ==1 && (blockIdx.x * blockDim.x + threadIdx.x) / tile_size==0 && threadIdx.x % tile_size==0)
+    {
+      printf("format:%d\n",int(idx_lse_full));
+      //printf("size:%d,%d,%d,%d",out_full.size[0],out_full.size[1],out_full.size[2],out_full.size[3]);
+      //printf("format:%d,%d,%d,%d\n",int(out_full.store_format[0]),int(out_full.store_format[1]),int(out_full.store_format[2]),int(out_full.store_format[3]));
+    }
     
     dtype *cur_out = out + idx_out_full*dim_per_head;
     float lse_temp = lse[idx_lse_full];
@@ -1413,16 +1434,19 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
 
       for (int i = start; i < end; i++) {
 
-        if (id[1]>=0 && start + tensors.start_tensor_this_launch > full_num && i>rank)
-        {
-          idx_out=idx_out_half;
-          idx_lse=idx_lse_half;
-        }
-        else
-        {
-          idx_out=idx_out_full;
-          idx_lse=idx_lse_full;
-        }
+        // if (id[1]>=0 && start + tensors.start_tensor_this_launch > full_num && i>rank)
+        // {
+        //   idx_out=idx_out_half;
+        //   idx_lse=idx_lse_half;
+        // }
+        // else
+        // {
+        //   idx_out=idx_out_full;
+        //   idx_lse=idx_lse_full;
+        // }
+
+        idx_out=idx_out_full;
+        idx_lse=idx_lse_full;
 
         dtype *cur_out_per_step =
             reinterpret_cast<dtype *>(tensors.addresses_out[i]) + idx_out*dim_per_head;
@@ -1535,7 +1559,7 @@ void fused_out_correction_helper(at::Tensor out, const std::vector<at::Tensor> &
       if (softmax_lse_in_packed_format) {
         fused_out_correction_kernel<dtype, tile, causal,  QKVFormat::TH,QKVFormat::HT,
                                     max_tensors>
-            <<<grid, block, sizeof(int) * (batch + 1) * 2, at::cuda::getCurrentCUDAStream()>>>(
+            <<<grid, block, sizeof(int) * (batch + 1), at::cuda::getCurrentCUDAStream()>>>(
                 out.data_ptr<dtype>(), tensors, lse.data_ptr<float>(), cu_seqlens.data_ptr<int>(),
                 batch, num_heads, dim_per_head, lse_seqlen, cp_size, rank, i);
       } else {

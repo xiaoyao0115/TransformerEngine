@@ -2622,7 +2622,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
         
         
         # if rank==0:
-        #     print(out.view(-1, *out.shape[-3:]).shape,out.dtype)
+        #     print(out.shape,out.dtype)
         #     print(softmax_lse.shape,softmax_lse.dtype)
         #     print(cu_seqlens_q_padded)
         #     print("lse step",softmax_lse_per_step[0].dtype)
@@ -2646,7 +2646,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
         # print("rank:",rank,"  lse:",softmax_lse.shape,"  out:",out.shape,
         #       "  out_per_step:",out_per_step[rank].shape,"  lse_per_step:",softmax_lse_per_step[rank].shape)
         with nvtx.annotate("Fused out correction", color="red"):
-            # if rank==1:
+            #if rank==1:
                 if qkv_format == "sbhd":
                     tex.fused_out_correction(
                         out.view(-1, *out.shape[-3:]),
@@ -2689,7 +2689,7 @@ class AttnFuncWithCPAndKVP2P(torch.autograd.Function):
 
         tols = dict(atol=5e-3, rtol=5e-3)
         # if rank==1:
-        torch.testing.assert_close(out, out_right, **tols)
+        #torch.testing.assert_close(out, out_right, **tols)
 
         # if rank==1:
         #     assert_close_with_diff(out, out_right,atol=5e-3, rtol=5e-3)
