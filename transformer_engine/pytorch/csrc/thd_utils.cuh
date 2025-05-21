@@ -268,19 +268,19 @@ IndexMapping build_mapping_thd(int index, int h_size, int d_size, int *cu_seqlen
   return mapping;
 }
 
-template <typename dtype, typename storage_type>
+template <typename dtype>
 __device__ __forceinline__
-void out_correction(storage_type *out, storage_type out_per_step, float lse, float lse_per_step) {
+void out_correction(int4 *out, int4 out_per_step, float lse, float lse_per_step) {
   dtype *p_out = reinterpret_cast<dtype *>(out);
   dtype *p_out_per_step = reinterpret_cast<dtype *>(&out_per_step);
   float lse_corrected = exp(lse_per_step - lse);
-  for (int i = 0; i < sizeof(storage_type) / sizeof(dtype); i++) {
-    p_out[i] += static_cast<float>(p_out_per_step[i]) * lse_corrected;
+  for (int i = 0; i < sizeof(int4) / sizeof(dtype); i++) {
+    p_out[i] = static_cast<float>(p_out[i]) + static_cast<float>(p_out_per_step[i]) * lse_corrected;
   }
 }
 
 template <typename dtype, bool causal, NVTE_QKV_Format out_format,
-          bool softmax_lse_in_packed_format, int max_tensors, typename storage_type>
+          bool softmax_lse_in_packed_format, int max_tensors>
 __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> tensors, float *lse,
                                             int *cu_seqlens, int batch, int num_heads,
                                             int dim_per_head, int lse_seqlen, int num_total_tokens,
@@ -301,7 +301,7 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
     num_valid_tokens = lse_seqlen * batch;
   }
 
-  constexpr int elems_per_thread = sizeof(storage_type) / sizeof(dtype);
+  constexpr int elems_per_thread = sizeof(int4) / sizeof(dtype);
   int threads_per_token = num_heads * dim_per_head / elems_per_thread;
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -311,8 +311,8 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
   if (tid / threads_per_token >= num_valid_tokens / 2) {
     // Padding with zeros for invalid areas of out tensor.
     int threads_do_padding = (num_total_tokens - num_valid_tokens) * threads_per_token / 2;
-    reinterpret_cast<storage_type *>(out)[tid * 2] = {0};
-    reinterpret_cast<storage_type *>(out)[tid * 2 + threads_do_padding] = {0};
+    reinterpret_cast<int4 *>(out)[tid * 2] = {0, 0, 0, 0};
+    reinterpret_cast<int4 *>(out)[tid * 2 + threads_do_padding] = {0, 0, 0, 0};;
     return;
   }
 
@@ -347,38 +347,38 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
                                 batch, lse_seqlen / 2, softmax_lse_in_packed_format);
   }
 
-  storage_type out_buffer;
-  storage_type out_per_step_buffer;
+  int4 out_buffer;
+  int4 out_per_step_buffer;
 
   // Step1: Calculate the first half, only full tensors need to be concerned.
   {
     float lse_full = lse[mapping.lse_first_half];
-    out_buffer = {0};
+    out_buffer = {0, 0, 0, 0};
     for (int tensor_id = 0; tensor_id < num_full_tensors; tensor_id++) {
       float lse_per_step = reinterpret_cast<float *>(tensors.lse[tensor_id])[mapping.lse_first_half];
-      out_per_step_buffer = reinterpret_cast<storage_type *>(tensors.out[tensor_id])[mapping.out_first_half];
+      out_per_step_buffer = reinterpret_cast<int4 *>(tensors.out[tensor_id])[mapping.out_first_half];
       out_correction<dtype>(&out_buffer, out_per_step_buffer, lse_full, lse_per_step);
     }
-    reinterpret_cast<storage_type *>(out)[mapping.out_first_half] = out_buffer;
+    reinterpret_cast<int4 *>(out)[mapping.out_first_half] = out_buffer;
   }
 
   // Step2: Calculate the second half, all tensors need to be concerned.
   {
     float lse_full = lse[mapping.lse_second_half];
-    out_buffer = {0};
+    out_buffer = {0, 0, 0, 0};
     // Step2.1 Calculate the second half of full tensors.
     for (int tensor_id = 0; tensor_id < num_full_tensors; tensor_id++) {
       float lse_per_step = reinterpret_cast<float *>(tensors.lse[tensor_id])[mapping.lse_second_half];
-      out_per_step_buffer = reinterpret_cast<storage_type *>(tensors.out[tensor_id])[mapping.out_second_half];
+      out_per_step_buffer = reinterpret_cast<int4 *>(tensors.out[tensor_id])[mapping.out_second_half];
       out_correction<dtype>(&out_buffer, out_per_step_buffer, lse_full, lse_per_step);
     }
     // Step2.2 Calculate the second half of non-full tensors.
     for (int tensor_id = num_full_tensors; tensor_id < tensors.num; tensor_id++) {
       float lse_per_step = reinterpret_cast<float *>(tensors.lse[tensor_id])[mapping.lse];
-      out_per_step_buffer = reinterpret_cast<storage_type *>(tensors.out[tensor_id])[mapping.out];
+      out_per_step_buffer = reinterpret_cast<int4 *>(tensors.out[tensor_id])[mapping.out];
       out_correction<dtype>(&out_buffer, out_per_step_buffer, lse_full, lse_per_step);
     }
-    reinterpret_cast<storage_type *>(out)[mapping.out_second_half] = out_buffer;
+    reinterpret_cast<int4 *>(out)[mapping.out_second_half] = out_buffer;
   }
 }
 

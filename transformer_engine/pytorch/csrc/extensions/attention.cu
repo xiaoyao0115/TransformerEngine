@@ -584,7 +584,7 @@ void fused_out_correction_helper(at::Tensor &out, const std::vector<at::Tensor> 
         DISPATCH_BOOL(
             softmax_lse_in_packed_format, 0,
             transformer_engine::fused_attn::fused_out_correction_kernel<
-                dtype, causal, qkv_format_0, bool_0, max_tensors, int4>
+                dtype, causal, qkv_format_0, bool_0, max_tensors>
             <<<num_blocks, threads_per_block, cu_seqlens_size, at::cuda::getCurrentCUDAStream()>>>(
                 out.data_ptr<dtype>(), tensors, lse.data_ptr<float>(), cu_seqlens_ptr, batch,
                 num_heads, dim_per_head, lse_seqlen, total_tokens, cp_size, rank, i););)
