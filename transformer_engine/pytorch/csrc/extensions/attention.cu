@@ -557,22 +557,23 @@ void fused_out_correction_helper(at::Tensor &out, const std::vector<at::Tensor> 
       lse_seqlen = lse.size(2);
     }
   }
-  constexpr int tile = 16;
-  constexpr int block = 512;
-  unsigned int grid_x;
 
-  grid_x = (static_cast<size_t>(total_tokens) * tile + block - 1) / block;
-  dim3 grid = {grid_x, (unsigned int)num_heads};
+  int elems_per_thread = sizeof(int4) / sizeof(dtype);  // Using ldg128
+  NVTE_CHECK(dim_per_head % elems_per_thread == 0, "Unsupported head size.");
+  NVTE_CHECK(total_tokens % 2 == 0, "total tokens must be even."); // Need to split tokens into two halves
+  int threads_per_block = 256;
+  int total_threads = total_tokens / 2 * num_heads * dim_per_head / elems_per_thread;
+  int num_blocks = (total_threads + threads_per_block - 1) / threads_per_block;
 
   constexpr int max_tensors = 64;
   transformer_engine::fused_attn::TensorList<max_tensors> tensors;
 
   for (int i = 0; i < cp_size; i += max_tensors) {
     int num_tensors = std::min(max_tensors, cp_size - i);
-    tensors.num_tensors_this_launch = num_tensors;
+    tensors.num = num_tensors;
     for (int j = 0; j < num_tensors; j++) {
-      tensors.addresses_out[j] = out_per_step[i + j].data_ptr<dtype>();
-      tensors.addresses_lse[j] = lse_per_step[i + j].data_ptr<float>();
+      tensors.out[j] = out_per_step[i + j].data_ptr<dtype>();
+      tensors.lse[j] = lse_per_step[i + j].data_ptr<float>();
     }
 
     NVTE_CHECK(!(softmax_lse_in_packed_format == true && qkv_format != "thd"),
@@ -583,8 +584,8 @@ void fused_out_correction_helper(at::Tensor &out, const std::vector<at::Tensor> 
         DISPATCH_BOOL(
             softmax_lse_in_packed_format, 0,
             transformer_engine::fused_attn::fused_out_correction_kernel<
-                dtype, tile, causal, qkv_format_0, bool_0, max_tensors>
-            <<<grid, block, cu_seqlens_size, at::cuda::getCurrentCUDAStream()>>>(
+                dtype, causal, qkv_format_0, bool_0, max_tensors, int4>
+            <<<num_blocks, threads_per_block, cu_seqlens_size, at::cuda::getCurrentCUDAStream()>>>(
                 out.data_ptr<dtype>(), tensors, lse.data_ptr<float>(), cu_seqlens_ptr, batch,
                 num_heads, dim_per_head, lse_seqlen, total_tokens, cp_size, rank, i););)
   }
