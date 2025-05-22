@@ -310,9 +310,8 @@ __global__ void fused_out_correction_kernel(dtype *out, TensorList<max_tensors> 
   }
   if (tid / threads_per_token >= num_valid_tokens / 2) {
     // Padding with zeros for invalid areas of out tensor.
-    int threads_do_padding = (num_total_tokens - num_valid_tokens) * threads_per_token / 2;
     reinterpret_cast<int4 *>(out)[tid * 2] = {0, 0, 0, 0};
-    reinterpret_cast<int4 *>(out)[tid * 2 + threads_do_padding] = {0, 0, 0, 0};;
+    reinterpret_cast<int4 *>(out)[tid * 2 + 1] = {0, 0, 0, 0};
     return;
   }
 
