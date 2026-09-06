@@ -81,6 +81,40 @@ class NativeCPTransport:
             (pair_bytes + 255) // 256 * 256, (2, *shape), dtype
         )
 
+    def exchange(
+        self,
+        tensor: torch.Tensor,
+        send_global_rank: int,
+        recv_global_rank: int,
+        channel: int = 0,
+        out: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Exchange one tensor over the borrowed parent communicator."""
+        if tensor.device != self.arena.device:
+            raise ValueError(
+                f"Exchange tensor is on {tensor.device}, but the native CP arena is on "
+                f"{self.arena.device}"
+            )
+        if out is not None and (
+            out.shape != tensor.shape or out.dtype != tensor.dtype or out.device != tensor.device
+        ):
+            raise ValueError("Exchange output must match the input shape, dtype, and device")
+        size = tensor.nbytes
+        send = self._view(0, tensor.shape, tensor.dtype)
+        recv = self._view((size + 255) // 256 * 256, tensor.shape, tensor.dtype)
+        send.copy_(tensor)
+        self.send_recv(
+            send,
+            send_global_rank,
+            recv,
+            recv_global_rank,
+            channel=channel,
+        ).wait()
+        if out is None:
+            return recv.clone()
+        out.copy_(recv)
+        return out
+
     def send_recv(
         self,
         send_tensor: torch.Tensor,
